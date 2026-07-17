@@ -227,107 +227,113 @@ def _framework(errs):
     _fw_done = True
     try:
         from . import webapp, _assets  # corruption lesson: selftest alone
-        tmpl = _assets.COURSE_TMPL     # never imports the web layer
-        if re.search(r'\n\$\("#\w+"\)\.addEventListener', tmpl):
-            errs.append("framework: top-level direct addEventListener in "
-                        "template \u2014 use the null-safe bindEl helper")
+        assert _assets.FALLBACK_HTML   # never imports the web layer
         pj = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "courses", "planned.json")
         if os.path.exists(pj):
             json.load(open(pj))
+        # webdist integrity: the built frontend must ship with the framework
+        wd = webapp.WEBDIST
+        idx = os.path.join(wd, "index.html")
+        if not os.path.isfile(idx):
+            errs.append("framework: core/webdist/index.html missing \u2014 "
+                        "the built frontend ships with the zip; rebuild "
+                        "with `cd web && npm install && npm run build`")
+        else:
+            html = open(idx, encoding="utf-8").read()
+            for ref in re.findall(r'(?:src|href)="(/assets/[^"]+)"', html):
+                if not os.path.isfile(os.path.join(wd, ref.lstrip("/"))):
+                    errs.append(f"framework: webdist references {ref} "
+                                "but the file is missing \u2014 rebuild "
+                                "(`npm run build` in web/)")
+            for req in ("static/owl-hero.webp", "static/owl-head.png",
+                        "favicon.ico"):
+                if not os.path.isfile(os.path.join(wd, req)):
+                    errs.append(f"framework: webdist/{req} missing \u2014 "
+                                "rebuild (`npm run build` in web/)")
     except Exception as e:
         errs.append(f"framework: web layer broken: {e!r}")
 
 # ---------------------------------------------------------------------------
-# node shim (opportunistic real JS execution)
+# render checks: meta payload always; built bundle under jsdom when possible
 # ---------------------------------------------------------------------------
 
-NODE_SHIM = r"""
-const fs = require("fs");
-const html = fs.readFileSync(process.argv[2], "utf8");
-const script = html.split("<script>")[1].split("</script>")[0];
-const ids = new Set([...html.matchAll(/id="([A-Za-z]+)"/g)].map(m => m[1]));
-const tabs = [...html.matchAll(/<button class="tab[^"]*" data-tab="([a-z]+)"/g)]
-  .map(m => ({dataset: {tab: m[1]}, addEventListener(){},
-              classList: {add(){}, remove(){}, toggle(){}}}));
-function el(id){ return {id, addEventListener(){}, dataset:{}, style:{},
-  classList:{add(){},remove(){},toggle(){},contains(){return false}},
-  value:"", innerHTML:"", textContent:"", focus(){}, disabled:false,
-  appendChild(){}, childNodes:[], closest(){return null},
-  querySelector(){return null}, querySelectorAll(){return []}}; }
-global.document = {
-  querySelector(sel){
-    if (sel.startsWith("#")) return ids.has(sel.slice(1)) ? el(sel.slice(1)) : null;
-    if (sel === ".play") return html.includes('class="play"') ? el("play") : null;
-    return null; },
-  querySelectorAll(sel){ return sel === ".tab" ? tabs : []; },
-  createElement(){ return el("x"); }, addEventListener(){}, };
-global.history = {replaceState(){}}; global.location = {hash: ""};
-global.fetch = async () => ({json: async () => ({sidebar:null, selector:null,
-  blocks:[], notes:[], concepts:[], weak:[], blueprint:[], results:[]})});
-global.confirm = () => false; global.alert = () => {};
-process.on("unhandledRejection", e => { console.error("ASYNC:", e && e.message);
-  process.exit(1); });
-try { eval(script); } catch (e) { console.error("SYNC:", e.message); process.exit(1); }
-setTimeout(() => process.exit(0), 60);
-"""
-
 def _render_checks(pack, errs, warns):
+    """Returns True if the built page JS was actually executed."""
     try:
-        from .webapp import course_html
-        html = course_html({"pack": pack})
+        from .webapp import course_meta, WEBDIST
+        meta = course_meta(pack)
+        json.dumps(meta)
     except Exception as e:
-        errs.append(f"render: course_html raised {e!r}")
-        return
-    if "%%" in html:
-        errs.append("render: unreplaced %% token in page: "
-                    + html[html.index("%%") - 20:html.index("%%") + 30])
+        errs.append(f"render: course_meta raised {e!r}")
+        return False
     want = (["playground"] if pack.has_playground else []) + ["drill"] \
         + (["sqldrill"] if pack.sql_generators else []) + ["mastery", "guide"]
-    got = re.findall(r'<button class="tab[^"]*" data-tab="([a-z]+)"', html)
+    got = [t.get("id") for t in meta.get("tabs", [])]
     if got != want:
         errs.append(f"render: tabs {got} != capabilities {want}")
     if pack.has_playground:
-        if 'id="playground"' not in html:
-            errs.append("render: stipulated playground missing from page")
-        cls = 'id="stdinwrap" class="%s"' % (
-            "" if getattr(pack.playground, "stdin_enabled", False)
-            else "hidden")
-        if cls not in html:
-            errs.append("render: stdin box visibility wrong for backend")
-    elif 'id="playground"' in html or "console" in html.split("<script>")[0]:
-        errs.append("render: console markup on a course with no playground")
-    from .webapp import _esc
-    for _val, label in pack.topics:
-        if _esc(label) not in html:
-            errs.append(f"render: topic label {label!r} missing from "
-                        "focus dropdown")
+        pg = meta.get("playground")
+        if not pg:
+            errs.append("render: stipulated playground missing from meta")
+        else:
+            if pg.get("label") != pack.playground.label:
+                errs.append("render: playground label mismatch")
+            if not isinstance(pg.get("placeholder"), str):
+                errs.append("render: playground placeholder missing")
+            if pg.get("stdin") != bool(getattr(pack.playground,
+                                               "stdin_enabled", False)):
+                errs.append("render: stdin flag wrong for backend")
+    elif meta.get("playground"):
+        errs.append("render: console meta on a course with no playground")
+    have_topics = {(t.get("value"), t.get("label"))
+                   for t in meta.get("topics", [])}
+    for val, label in pack.topics:
+        if (val, label) not in have_topics:
+            errs.append(f"render: topic {label!r} missing from focus "
+                        "dropdown meta")
+    have_ch = {c.get("ch"): c.get("name", "")
+               for c in meta.get("chapters", [])}
     for ch in sorted(pack.ch_weight):
-        if f"{pack.unit_label} {ch}" not in html:
+        if ch not in have_ch:
             errs.append(f"render: '{pack.unit_label} {ch}' missing from "
-                        "focus dropdown")
+                        "focus dropdown meta")
+        elif have_ch[ch] != pack.chapter_names.get(ch, ""):
+            errs.append(f"render: chapter {ch} name mismatch in meta")
+    if meta.get("unit_label") != pack.unit_label:
+        errs.append("render: unit_label mismatch in meta")
+    if meta.get("guide") != bool(pack.study_guide_path):
+        errs.append("render: guide flag doesn't match study_guide_path")
+
+    # opportunistic: execute the BUILT bundle under jsdom (dev machines)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    web = os.path.join(root, "web")
+    script = os.path.join(web, "scripts", "render_check.mjs")
     node = shutil.which("node")
-    if node:
-        with tempfile.NamedTemporaryFile("w", suffix=".html",
+    jsdom = os.path.isdir(os.path.join(web, "node_modules", "jsdom"))
+    if node and jsdom and os.path.isfile(script) \
+            and os.path.isfile(os.path.join(WEBDIST, "index.html")):
+        with tempfile.NamedTemporaryFile("w", suffix=".json",
                                          delete=False) as f:
-            f.write(html)
-            page = f.name
-        with tempfile.NamedTemporaryFile("w", suffix=".js",
-                                         delete=False) as f:
-            f.write(NODE_SHIM)
-            shim = f.name
+            json.dump(meta, f)
+            mp = f.name
         try:
-            r = subprocess.run([node, shim, page], capture_output=True,
-                               text=True, timeout=30)
+            r = subprocess.run([node, script, WEBDIST, mp], cwd=web,
+                               capture_output=True, text=True, timeout=60)
             if r.returncode:
-                errs.append("render: page JS crashed under node: "
-                            + (r.stderr or "").strip()[:160])
+                errs.append("render: built page failed under jsdom: "
+                            + (r.stderr or r.stdout or "").strip()[:200])
+                return False
+            return True
+        except Exception as e:
+            errs.append(f"render: jsdom run failed: {e!r}")
+            return False
         finally:
-            os.unlink(page)
-            os.unlink(shim)
+            os.unlink(mp)
     else:
-        warns.append("node not installed \u2014 page JS not executed "
-                     "(structural checks only)")
+        warns.append("page JS not executed (needs node + web/node_modules "
+                     "\u2014 structural checks only)")
+        return False
 
 # ---------------------------------------------------------------------------
 # main validators
@@ -647,10 +653,10 @@ def validate_pack(pack, out=None):
 
     # --- render -------------------------------------------------------------
     pre_errs = len(errs)
-    _render_checks(pack, errs, warns)
+    js_ran = _render_checks(pack, errs, warns)
     if len(errs) == pre_errs:
-        ok("render: tabs match capabilities, tokens filled, dropdown "
-           "complete" + (", page JS executes" if shutil.which("node")
+        ok("render: tabs match capabilities, meta complete, dropdown "
+           "complete" + (", built page renders under jsdom" if js_ran
                          else ""))
 
     p(f"  SQLite: {sqlite3.sqlite_version}")

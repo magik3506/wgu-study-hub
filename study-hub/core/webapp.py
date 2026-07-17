@@ -1,8 +1,11 @@
 """WGU Study Hub web layer — serves every discovered course pack.
-Homepage lists packs; each gets its own app at /c/<slug> with tabs driven
-by pack capabilities (Playground/SQL drill only for SQL courses, Study
-guide tab embedding courses/<slug>/study_guide.pdf when present)."""
+The frontend is a React app built into core/webdist/ (see web/); this
+server serves those static files plus JSON APIs. The homepage reads
+/api/courses; each course app at /c/<slug> reads /c/<slug>/api/meta and
+renders tabs driven by pack capabilities (Playground/SQL drill only when
+stipulated, Study guide tab when courses/<slug>/study_guide.pdf exists)."""
 import json
+import os
 import random
 import secrets
 import threading
@@ -11,21 +14,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from . import quiz as Q
-from ._assets import (APP_CSS, COURSE_TMPL, FAVICON, HOME_TMPL, OWL_SVG,
-                      PLAYGROUND_SECTION, SQLDRILL_SECTION)
+from ._assets import FALLBACK_HTML
 from .packs import data_dir_for
 
 MAX_SESSIONS = 24
 STATE = {}          # slug -> course state dict
 
-PLANNED = [
-    {"code": "D427", "name": "Data Management \u2014 Applications",
-     "blurb": "The SQL-writing course. This hub has a perch reserved for it."},
-]
+WEBDIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webdist")
 
-def _esc(s):
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;"))
+MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
+        ".css": "text/css; charset=utf-8", ".json": "application/json",
+        ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp",
+        ".ico": "image/x-icon", ".pdf": "application/pdf",
+        ".woff2": "font/woff2", ".woff": "font/woff", ".txt": "text/plain",
+        ".map": "application/json"}
 
 def _jval(v):
     if v is None or isinstance(v, (int, float, str)):
@@ -47,111 +49,66 @@ def build_state(pack):
             "lock": threading.RLock(), "sessions": {}}
 
 # ---------------------------------------------------------------------------
-# page rendering
+# payloads the React app renders from
 # ---------------------------------------------------------------------------
 
 def _planned():
-    import os
     from .packs import COURSES_ROOT
     try:
         with open(os.path.join(COURSES_ROOT, "planned.json")) as f:
             return json.load(f)
     except Exception:
-        return PLANNED
+        return []
 
-def home_html():
-    cards = []
+def pack_chips(p):
+    """Capability chips, single source of truth for cards."""
+    chips = ["Exam drill", "Mastery"]
+    if p.has_playground:
+        chips.insert(0, p.playground.label)
+    if p.sql_generators:
+        chips.insert(-1, "SQL drill")
+    if p.study_guide_path:
+        chips.append("Study guide")
+    return chips
+
+def home_payload():
+    courses = []
     for st in STATE.values():
         p = st["pack"]
-        code = _esc(p.code)
-        codehtml = f"{code[0]}<b>{code[1:]}</b>" if len(code) > 1 else code
-        chips = ["Exam drill", "Mastery"]
-        if p.has_playground:
-            chips.insert(0, p.playground.label)
-        if p.sql_generators:
-            chips.insert(-1, "SQL drill")
-        if p.study_guide_path:
-            chips.append("Study guide")
-        chiph = "".join(f'<span class="chip">{c}</span>' for c in chips)
-        cards.append(f'''    <a class="course" href="/c/{_esc(p.slug)}">
-      <span class="pill">READY</span>
-      <div class="code">{codehtml}</div>
-      <h2>{_esc(p.name)}</h2>
-      <p>{_esc(p.blurb)}</p>
-      <div class="chiprow">{chiph}</div>
-    </a>''')
+        courses.append({"slug": p.slug, "code": p.code, "name": p.name,
+                        "blurb": p.blurb, "chips": pack_chips(p)})
     have = {st["pack"].code for st in STATE.values()}
-    for c in _planned():
-        if c["code"] in have:
-            continue
-        code = _esc(c["code"])
-        codehtml = f"{code[0]}<b>{code[1:]}</b>"
-        cards.append(f'''    <div class="course planned" aria-disabled="true">
-      <span class="pill dim">PLANNED</span>
-      <div class="code">{codehtml}</div>
-      <h2>{_esc(c["name"])}</h2>
-      <p>{_esc(c["blurb"])}</p>
-    </div>''')
-    return (HOME_TMPL.replace("%%CARDS%%", "\n".join(cards))
-            .replace("%%OWL%%", OWL_SVG).replace("%%FAVICON%%", FAVICON))
+    planned = [c for c in _planned() if c.get("code") not in have]
+    return {"courses": courses, "planned": planned}
 
-def course_html(st):
-    p = st["pack"]
+def course_tabs(p):
     tabs = []
     if p.has_playground:
-        tabs.append(("playground", "Playground"))
-    tabs.append(("drill", "Exam drill"))
+        tabs.append({"id": "playground", "label": "Playground"})
+    tabs.append({"id": "drill", "label": "Exam drill"})
     if p.sql_generators:
-        tabs.append(("sqldrill", "SQL drill"))
-    tabs.append(("mastery", "Mastery"))
-    tabs.append(("guide", "Study guide"))
-    tabh = "\n".join(
-        f'  <button class="tab{" on" if i == 0 else ""}" data-tab="{t}">'
-        f"{lbl}</button>" for i, (t, lbl) in enumerate(tabs))
+        tabs.append({"id": "sqldrill", "label": "SQL drill"})
+    tabs.append({"id": "mastery", "label": "Mastery"})
+    tabs.append({"id": "guide", "label": "Study guide"})
+    return tabs
 
-    opts = ['<option value="">Everything (blueprint-weighted)</option>']
-    for ch in sorted(p.ch_weight):
-        nm = p.chapter_names.get(ch, "")
-        opts.append(f'<option value="{ch}">{_esc(p.unit_label)} {ch}'
-                    + (f" &middot; {_esc(nm)}" if nm else "") + "</option>")
-    for val, lbl in p.topics:
-        opts.append(f'<option value="{_esc(val)}">{_esc(lbl)}</option>')
-
-    if p.study_guide_path:
-        guide = ('<h3>Study guide</h3><p class="sub">The exam-oriented '
-                 'reference built from the course source.</p>'
-                 '<div style="border:1px solid var(--line);border-radius:10px;'
-                 'overflow:hidden;height:78vh"><embed src="%%BASE%%/guide.pdf" '
-                 'type="application/pdf" style="width:100%;height:100%">'
-                 '</div><p class="sub" style="margin-top:10px">'
-                 '<a href="%%BASE%%/guide.pdf" download>Download PDF</a></p>')
-    else:
-        guide = ('<h3>Study guide</h3><div class="empty">No study guide in '
-                 'this pack yet.<br><br>Generate one with the '
-                 '<span class="mono">course-study-guide</span> skill, then '
-                 'drop the PDF at <span class="mono">courses/'
-                 + _esc(p.slug) + '/study_guide.pdf</span> and refresh.</div>')
-
-    return (COURSE_TMPL
-            .replace("%%PLAYGROUND_SECTION%%",
-                     PLAYGROUND_SECTION if p.has_playground else "")
-            .replace("%%PG_LABEL%%",
-                     _esc(p.playground.label) if p.has_playground else "")
-            .replace("%%PG_PLACEHOLDER%%",
-                     _esc(p.playground.placeholder)
-                     if p.has_playground else "")
-            .replace("%%PG_STDIN_CLASS%%",
-                     ("" if getattr(p.playground, "stdin_enabled", False)
-                      else "hidden") if p.has_playground else "hidden")
-            .replace("%%SQLDRILL_SECTION%%",
-                     SQLDRILL_SECTION if p.sql_generators else "")
-            .replace("%%TABS%%", tabh)
-            .replace("%%TOPIC_OPTIONS%%", "\n        ".join(opts))
-            .replace("%%GUIDE_BODY%%", guide)
-            .replace("%%BASE%%", "/c/" + p.slug)
-            .replace("%%CODE%%", _esc(p.code))
-            .replace("%%NAME%%", _esc(p.name))
-            .replace("%%BADGE%%", _esc(p.badge)))
+def course_meta(p):
+    """Everything the course page needs to render capability-true UI."""
+    pg = None
+    if p.has_playground:
+        pg = {"label": p.playground.label,
+              "placeholder": p.playground.placeholder,
+              "stdin": bool(getattr(p.playground, "stdin_enabled", False))}
+    return {"slug": p.slug, "code": p.code, "name": p.name,
+            "badge": p.badge, "base": "/c/" + p.slug,
+            "tabs": course_tabs(p),
+            "unit_label": p.unit_label,
+            "chapters": [{"ch": ch, "name": p.chapter_names.get(ch, "")}
+                         for ch in sorted(p.ch_weight)],
+            "topics": [{"value": v, "label": l} for v, l in p.topics],
+            "playground": pg,
+            "has_sql_drill": bool(p.sql_generators),
+            "guide": bool(p.study_guide_path)}
 
 # ---------------------------------------------------------------------------
 # APIs (per course state)
@@ -320,23 +277,52 @@ def api_stats(st):
 # HTTP plumbing
 # ---------------------------------------------------------------------------
 
+def _index_bytes():
+    try:
+        with open(os.path.join(WEBDIST, "index.html"), "rb") as f:
+            return f.read()
+    except OSError:
+        return FALLBACK_HTML.encode("utf-8")
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "WGUStudyHub/2.0"
+    server_version = "WGUStudyHub/3.0"
 
     def log_message(self, *args):
         pass
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, cache="no-store"):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(data)
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj), "application/json")
+
+    def _index(self):
+        self._send(200, _index_bytes(), "text/html; charset=utf-8")
+
+    def _static(self, path):
+        """Serve a file from webdist. Returns True if it existed."""
+        rel = os.path.normpath(path.lstrip("/"))
+        if rel.startswith("..") or os.path.isabs(rel):
+            return False
+        full = os.path.join(WEBDIST, rel)
+        if not (os.path.isfile(full)
+                and os.path.realpath(full).startswith(
+                    os.path.realpath(WEBDIST) + os.sep)):
+            return False
+        ext = os.path.splitext(full)[1].lower()
+        # Vite content-hashes everything under /assets — cache those hard.
+        cache = ("public, max-age=31536000, immutable"
+                 if rel.startswith("assets" + os.sep) else "no-store")
+        with open(full, "rb") as f:
+            self._send(200, f.read(),
+                       MIME.get(ext, "application/octet-stream"), cache)
+        return True
 
     def _read_body(self):
         try:
@@ -356,14 +342,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if st is None:
                 if rest == "/":
-                    return self._send(200, home_html(),
-                                      "text/html; charset=utf-8")
-                if rest == "/app.css":
-                    return self._send(200, APP_CSS, "text/css; charset=utf-8")
+                    return self._index()
+                if rest == "/api/courses":
+                    return self._json(home_payload())
+                if self._static(rest):
+                    return
             else:
                 if rest == "":
-                    return self._send(200, course_html(st),
-                                      "text/html; charset=utf-8")
+                    return self._index()
+                if rest == "api/meta":
+                    return self._json(course_meta(st["pack"]))
                 if rest == "guide.pdf" and st["pack"].study_guide_path:
                     with open(st["pack"].study_guide_path, "rb") as f:
                         return self._send(200, f.read(), "application/pdf")

@@ -6,6 +6,8 @@ courses), hands-on SQL tasks graded by execution, a mastery map, and each
 course's study guide — all in one place, all offline.
 
 **Requirements:** Python 3.8+ standard library. Nothing to pip install.
+The web UI ships pre-built (React, dark/light theme, night-owl by
+default) — running the hub needs no Node, npm, or network.
 
 ## Run it
 
@@ -19,7 +21,10 @@ course's study guide — all in one place, all offline.
 ## Layout
 
     wgu_study_hub.py      the only file you run
-    core/                 engine, grader, harness, web UI — course-agnostic
+    core/                 engine, grader, harness, server — course-agnostic
+    core/webdist/         the built web UI (ships with the framework)
+    web/                  frontend source (React + Vite + Tailwind) —
+                          only needed if you're changing the UI itself
     courses/<slug>/       one folder per class = one card on the homepage
         course.py         manifest (code, name, blueprint, topics)
         content.py        concepts, sample databases, question generators
@@ -70,6 +75,24 @@ A pack only ships when `--selftest <slug>` prints "All checks passed" —
 the harness executes every generator across many seeds, grades every SQL
 reference against its own grader, rejects unanswerable tasks, and checks
 full concept coverage.
+
+## Hacking on the UI (optional)
+
+The frontend under `web/` is React 19 + Vite + Tailwind v4, with a
+dark/light theme system (night-owl dark is the default; the toggle in the
+top bar persists your choice). End users never touch this — the built app
+is committed at `core/webdist/` and the Python server serves it.
+
+To change the UI you need Node 22+:
+
+    cd web
+    npm install
+    npm run dev      # live-reload dev server, proxies APIs to a running hub
+    npm run build    # writes core/webdist — commit the result
+
+`--selftest` verifies `webdist` integrity everywhere, and on machines with
+`web/node_modules` present it also boots the built bundle in jsdom and
+asserts the rendered page matches each pack's capabilities.
 
 ## Fine print
 
