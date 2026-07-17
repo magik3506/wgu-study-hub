@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { Btn, Kbd, Note, Panel, ProgressBar, ResultTable, Tag } from "../ui.jsx";
+import { reportAnswer } from "../sound.js";
 import Summary from "./Summary.jsx";
 
 export default function SqlDrill({ api }) {
@@ -31,6 +32,7 @@ export default function SqlDrill({ api }) {
       setSess({ err: d.error });
       return;
     }
+    reportAnswer(d); // mascot: right/wrong line, or the score line at the end
     setSess({ ...sess, reveal: { ...d, skip } });
   }
 

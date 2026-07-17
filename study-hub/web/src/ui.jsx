@@ -1,6 +1,16 @@
 /* Shared UI kit — every visual primitive the hub uses. */
 
 import { useEffect, useRef, useState } from "react";
+import {
+  bannerState,
+  dismissBanner,
+  musicState,
+  nextTrack,
+  prevTrack,
+  stopAllSound,
+  subscribe,
+  toggleMute,
+} from "./sound.js";
 
 export function Btn({ variant = "solid", className = "", ...props }) {
   const styles = {
@@ -166,6 +176,22 @@ function MusicNoteIcon({ muted }) {
   );
 }
 
+function SkipIcon({ dir }) {
+  // dir: -1 previous, 1 next
+  return (
+    <svg
+    viewBox="0 0 24 24"
+    className="h-3.5 w-3.5"
+    fill="currentColor"
+    aria-hidden="true"
+    style={dir < 0 ? { transform: "scaleX(-1)" } : undefined}
+    >
+    <path d="M5 5.5v13c0 .8.9 1.3 1.6.9l9.9-6.5c.6-.4.6-1.4 0-1.8L6.6 4.6C5.9 4.2 5 4.7 5 5.5z" />
+    <rect x="17.2" y="5" width="2.3" height="14" rx="1.1" />
+    </svg>
+  );
+}
+
 export function ThemeToggle({ theme, onToggle }) {
   const dark = theme === "dark";
   return (
@@ -188,164 +214,214 @@ export function ThemeToggle({ theme, onToggle }) {
   );
 }
 
-// ---------- Music Player (Singleton) ----------
-const PLAYLIST_ID = "PLt7bG0K25iXj2h1eql20RZIPB_2CtK659";
+/* ---------- Music controls (state lives in sound.js, page-load scoped) ---- */
 
-// These live outside React so they survive page changes
-let globalPlayer = null;
-let globalMuted = true;
-let globalTitle = "Lofi Study Beats";
-let globalReady = false;
-const listeners = new Set();
-
-function notify() {
-  listeners.forEach((fn) => fn());
+export function useSound() {
+  const [, forceUpdate] = useState(0);
+  useEffect(() => subscribe(() => forceUpdate((n) => n + 1)), []);
 }
-
-function createGlobalPlayer() {
-  if (globalPlayer) return;
-
-  const container = document.createElement("div");
-  container.style.cssText = "position:absolute;left:-9999px;width:0;height:0;";
-  document.body.appendChild(container);
-
-  globalPlayer = new window.YT.Player(container, {
-    height: "0",
-    width: "0",
-    playerVars: {
-      listType: "playlist",
-      list: PLAYLIST_ID,
-      autoplay: 1,
-      mute: 1,
-      controls: 0,
-      disablekb: 1,
-      fs: 0,
-      modestbranding: 1,
-      playsinline: 1,
-      rel: 0,
-    },
-    events: {
-      onReady: (e) => {
-        e.target.playVideo();
-        e.target.mute();
-        globalReady = true;
-        updateTitle(e.target);
-        notify();
-      },
-      onStateChange: (e) => {
-        if (e.data === window.YT.PlayerState.PLAYING) {
-          updateTitle(e.target);
-        }
-      },
-    },
-  });
-}
-
-function updateTitle(player) {
-  try {
-    const data = player.getVideoData();
-    if (data && data.title) {
-      globalTitle = data.title;
-      notify();
-    }
-  } catch (_) {}
-}
-
-function ensureYT() {
-  return new Promise((resolve) => {
-    if (window.YT && window.YT.Player) {
-      resolve();
-      return;
-    }
-    if (!window._ytLoading) {
-      window._ytLoading = true;
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      document.head.appendChild(tag);
-    }
-    const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      if (prev) prev();
-      resolve();
-    };
-  });
-}
-
-// Start loading the API as soon as this module is imported
-ensureYT().then(createGlobalPlayer);
 
 function MusicControls() {
-  const [, forceUpdate] = useState(0);
+  useSound();
+  const m = musicState();
+  const dead = !m.ready;
 
-  useEffect(() => {
-    const listener = () => forceUpdate((n) => n + 1);
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  }, []);
-
-  function toggleMute() {
-    if (!globalPlayer || !globalReady) return;
-    if (globalMuted) {
-      globalPlayer.unMute();
-      globalMuted = false;
-    } else {
-      globalPlayer.mute();
-      globalMuted = true;
-    }
-    notify();
-  }
-
-  function prevTrack() {
-    if (!globalPlayer || !globalReady) return;
-    globalPlayer.previousVideo();
-  }
-
-  function nextTrack() {
-    if (!globalPlayer || !globalReady) return;
-    globalPlayer.nextVideo();
-  }
+  const iconBtn =
+    "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center " +
+    "rounded-full border border-line bg-panel2 text-crumb transition " +
+    "hover:text-ink hover:border-mut disabled:cursor-default " +
+    "disabled:opacity-40 disabled:hover:text-crumb disabled:hover:border-line";
 
   return (
-    <div className="flex items-center gap-2.5 min-w-0">
-    {/* Previous */}
-    <button
-    onClick={prevTrack}
-    title="Previous track"
-    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-panel2 text-crumb hover:text-ink transition text-sm"
+    <div
+    className="flex min-w-0 items-center gap-2"
+    title={m.unavailable ? "YouTube couldn't load — music is off for this session" : undefined}
     >
-    ⏮
+    <button onClick={prevTrack} disabled={dead} title="Previous track" className={iconBtn}>
+    <SkipIcon dir={-1} />
     </button>
 
-    {/* Now Playing + Title */}
-    <div className="min-w-0 text-center">
-    <div className="text-[10px] font-mono uppercase tracking-wider text-crumb/70">
-    {globalMuted ? "Muted" : "Now Playing"}
+    <div className="min-w-0 text-center leading-tight">
+    <div
+    className={
+      "font-mono text-[9.5px] uppercase tracking-[0.14em] " +
+      (!dead && !m.muted ? "text-gold" : "text-crumb/70")
+    }
+    >
+    {m.unavailable ? "Offline" : m.muted ? "Muted" : "Now playing"}
     </div>
-    <div className="truncate text-[12.5px] text-crumb max-w-[200px]">
-    {globalTitle}
+    <div className="max-w-[200px] truncate text-[12.5px] text-crumb" title={m.title}>
+    {m.title}
     </div>
     </div>
 
-    {/* Next */}
-    <button
-    onClick={nextTrack}
-    title="Next track"
-    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line bg-panel2 text-crumb hover:text-ink transition text-sm"
-    >
-    ⏭
+    <button onClick={nextTrack} disabled={dead} title="Next track" className={iconBtn}>
+    <SkipIcon dir={1} />
     </button>
 
-    {/* Mute / Unmute */}
     <button
     onClick={toggleMute}
-    title={globalMuted ? "Unmute" : "Mute"}
-    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line bg-panel2 text-crumb hover:text-ink transition ml-1"
+    disabled={dead}
+    title={m.muted ? "Unmute music" : "Mute music"}
+    aria-label={m.muted ? "Unmute music" : "Mute music"}
+    className={
+      "ml-1 flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center " +
+      "rounded-full border transition disabled:cursor-default disabled:opacity-40 " +
+      (!dead && !m.muted
+        ? "border-gold/60 bg-golddim text-gold hover:brightness-110"
+        : "border-line bg-panel2 text-crumb hover:text-ink hover:border-mut")
+    }
     >
-    <MusicNoteIcon muted={globalMuted} />
+    <MusicNoteIcon muted={m.muted || dead} />
     </button>
     </div>
   );
 }
+
+/* ---------- Speech bubble + speaking indicator (shared by both pages) ----- */
+
+export function Speaking() {
+  return (
+    <span className="eq inline-flex items-end gap-[2.5px]" aria-hidden="true">
+    <i /><i /><i /><i />
+    </span>
+  );
+}
+
+/** Themed speech bubble with a tail. tail: "right" (hero) | "bottom" (dock). */
+export function Bubble({ tail = "right", children, className = "" }) {
+  return (
+    <div
+    className={
+      "bubble-pop relative max-w-[240px] rounded-2xl border border-line " +
+      "bg-panel px-4 py-3 text-[13.5px] leading-snug text-ink " +
+      "shadow-[var(--card-shadow)] " +
+      className
+    }
+    >
+    {children}
+    <span className={"bubble-tail bubble-tail-" + tail} aria-hidden="true" />
+    </div>
+  );
+}
+
+/* ---------- Break banner (3h+ session overlay over the top bar) ----------- */
+
+export function BreakBanner() {
+  useSound();
+  const b = bannerState();
+  const [, tick] = useState(0);
+
+  // let the auto-hide actually repaint
+  useEffect(() => {
+    if (!b.visible) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [b.shownAt, b.visible]);
+
+  if (!b.visible) return null;
+  const hours = Math.floor(b.sessionHours);
+  return (
+    <div className="banner-drop fixed inset-x-0 top-0 z-50">
+    <div className="border-b border-gold/50 bg-gradient-to-r from-[#2b1f00] via-[#3a2a00] to-[#2b1f00] text-[#ffe9b3] shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+    <div className="mx-auto flex min-h-[54px] max-w-[1180px] items-center gap-3 px-5 py-2.5">
+    <span className="text-[20px]" aria-hidden="true">🦉</span>
+    <div className="min-w-0 flex-1">
+    <div className="font-display text-[14px] font-bold text-gold">
+    Time for a break, night owl
+    </div>
+    <div className="truncate text-[12.5px] opacity-90">
+    You've been studying for {hours}+ hour{hours === 1 ? "" : "s"} straight —
+    stretch, hydrate, rest your eyes. The drills will wait.
+    </div>
+    </div>
+    <button
+    onClick={dismissBanner}
+    aria-label="Dismiss break reminder"
+    title="Dismiss"
+    className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-gold/40 bg-transparent text-[15px] text-gold transition hover:bg-gold hover:text-goldink"
+    >
+    ✕
+    </button>
+    </div>
+    </div>
+    </div>
+  );
+}
+
+/* ---------- Power button (stop the local server from the app) ------------- */
+
+function PowerIcon() {
+  return (
+    <svg
+    viewBox="0 0 24 24"
+    className="h-3.5 w-3.5"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.2"
+    strokeLinecap="round"
+    aria-hidden="true"
+    >
+    <path d="M12 3v8" />
+    <path d="M6.2 6.6a8 8 0 1 0 11.6 0" />
+    </svg>
+  );
+}
+
+/** Stops the Python server — the answer to "how do I quit this without a
+ *  terminal?". Shows a friendly full-screen note afterwards. */
+function PowerButton() {
+  const [stopped, setStopped] = useState(false);
+
+  async function stop() {
+    const sure = window.confirm(
+      "Stop the Study Hub? The server on this computer will shut down."
+    );
+    if (!sure) return;
+    stopAllSound();
+    try {
+      await fetch("/api/shutdown", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+    } catch {
+      /* server already gone — same outcome */
+    }
+    setStopped(true);
+  }
+
+  if (stopped)
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-page px-5">
+      <div className="max-w-[420px] rounded-2xl border border-line bg-panel p-8 text-center shadow-[var(--card-shadow)]">
+      <div className="text-[40px]" aria-hidden="true">🦉</div>
+      <h2 className="mb-1.5 mt-2 font-display text-[20px] font-bold text-ink">
+      The hub has stopped
+      </h2>
+      <p className="m-0 text-[14px] leading-relaxed text-mut">
+      You can close this tab. Whenever you want it back, double-click the
+      launcher (or run{" "}
+      <span className="font-mono text-[12.5px]">python3 wgu_study_hub.py</span>
+      ). Rest well, night owl.
+      </p>
+      </div>
+      </div>
+    );
+
+  return (
+    <button
+    onClick={stop}
+    title="Stop the Study Hub server"
+    aria-label="Stop the Study Hub server"
+    className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-line bg-panel2 text-crumb transition hover:border-bad hover:text-bad"
+    >
+    <PowerIcon />
+    </button>
+  );
+}
+
+/* ---------- Top bar ------------------------------------------------------- */
 
 export function TopBar({ crumb, badge, theme, onToggle }) {
   return (
@@ -367,7 +443,7 @@ export function TopBar({ crumb, badge, theme, onToggle }) {
     )}
 
     {/* Music controls in the middle */}
-    <div className="flex-1 flex justify-center min-w-0">
+    <div className="flex min-w-0 flex-1 justify-center">
     <MusicControls />
     </div>
 
@@ -377,6 +453,7 @@ export function TopBar({ crumb, badge, theme, onToggle }) {
       </span>
     )}
     <ThemeToggle theme={theme} onToggle={onToggle} />
+    <PowerButton />
     </div>
     </header>
   );

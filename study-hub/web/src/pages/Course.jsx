@@ -1,49 +1,38 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { makeApi, useTheme } from "../theme.js";
-import { Empty, Panel, TopBar } from "../ui.jsx";
+import { Bubble, Empty, Panel, Speaking, TopBar, useSound } from "../ui.jsx";
+import { speakClickLine, voiceState } from "../sound.js";
 import Playground from "../features/Playground.jsx";
 import Drill from "../features/Drill.jsx";
 import SqlDrill from "../features/SqlDrill.jsx";
 import Mastery from "../features/Mastery.jsx";
 import Guide from "../features/Guide.jsx";
 
-const VOICE_LINES = [
-  { src: "/static/voice/01_systems_online.wav" },
-{ src: "/static/voice/02_whos_ready.wav" },
-{ src: "/static/voice/03_hello_world.wav" },
-{ src: "/static/voice/04_poke_ui.wav" },
-{ src: "/static/voice/05_algorithms.wav" },
-{ src: "/static/voice/06_night_owl.wav" },
-{ src: "/static/voice/07_at_your_service.wav" },
-{ src: "/static/voice/08_compile_knowledge.wav" },
-{ src: "/static/voice/09_catch_bugs.wav" },
-{ src: "/static/voice/10_fully_charged.wav" },
-];
+/* Mascot dock size, px. It used to be 240 — bump this back up if you miss
+ * the big portrait; everything scales off this one constant. */
+const PORTRAIT_SIZE = 150;
+
+const WORK_TIME = 25 * 60; // 25 minutes
+const BREAK_TIME = 5 * 60; // 5 minutes
 
 function PomodoroTimer() {
-  const WORK_TIME = 25 * 60; // 25 minutes
-  const BREAK_TIME = 5 * 60; // 5 minutes
-
   const [secondsLeft, setSecondsLeft] = useState(WORK_TIME);
   const [isRunning, setIsRunning] = useState(false);
   const [isBreak, setIsBreak] = useState(false);
-  const intervalRef = useRef(null);
 
   useEffect(() => {
-    if (isRunning) {
-      intervalRef.current = setInterval(() => {
-        setSecondsLeft((prev) => {
-          if (prev <= 1) {
-            const nextIsBreak = !isBreak;
-            setIsBreak(nextIsBreak);
-            return nextIsBreak ? BREAK_TIME : WORK_TIME;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    }
-
-    return () => clearInterval(intervalRef.current);
+    if (!isRunning) return;
+    const id = setInterval(() => {
+      setSecondsLeft((prev) => {
+        if (prev <= 1) {
+          const nextIsBreak = !isBreak;
+          setIsBreak(nextIsBreak);
+          return nextIsBreak ? BREAK_TIME : WORK_TIME;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
   }, [isRunning, isBreak]);
 
   function toggle() {
@@ -56,31 +45,119 @@ function PomodoroTimer() {
     setSecondsLeft(WORK_TIME);
   }
 
+  const total = isBreak ? BREAK_TIME : WORK_TIME;
+  const pct = Math.round((100 * (total - secondsLeft)) / total);
   const mins = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
   const secs = String(secondsLeft % 60).padStart(2, "0");
 
   return (
-    <div className="w-[240px] rounded-2xl border border-line bg-panel/95 backdrop-blur-md px-4 py-3 shadow-xl text-center">
-    <div className="text-[11px] font-mono uppercase tracking-wider text-mut mb-1">
+    <div className="w-[168px] rounded-2xl border border-line bg-panel/95 px-4 py-3 text-center shadow-xl backdrop-blur-md">
+    <div
+    className={
+      "mb-0.5 font-mono text-[10.5px] font-semibold uppercase tracking-[0.16em] " +
+      (isBreak ? "text-ok" : "text-gold")
+    }
+    >
     {isBreak ? "Break" : "Focus"}
     </div>
-    <div className="font-mono text-[28px] font-bold text-ink tracking-tight">
+    <div className="font-mono text-[28px] font-bold tracking-tight text-ink">
     {mins}:{secs}
     </div>
-    <div className="mt-2 flex justify-center gap-2">
+    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-panel2">
+    <i
+    className={
+      "block h-full transition-[width] duration-1000 ease-linear " +
+      (isBreak ? "bg-ok" : "bg-gold")
+    }
+    style={{ width: pct + "%" }}
+    />
+    </div>
+    <div className="mt-2.5 flex justify-center gap-2">
     <button
     onClick={toggle}
-    className="rounded-lg bg-gold px-3 py-1.5 text-[12px] font-semibold text-goldink hover:brightness-105 transition"
+    className="cursor-pointer rounded-lg bg-gold px-3 py-1.5 text-[12px] font-semibold text-goldink transition hover:brightness-105"
     >
     {isRunning ? "Pause" : "Start"}
     </button>
     <button
     onClick={reset}
-    className="rounded-lg border border-line bg-panel2 px-3 py-1.5 text-[12px] font-semibold text-mut hover:text-ink transition"
+    className="cursor-pointer rounded-lg border border-line bg-panel2 px-3 py-1.5 text-[12px] font-semibold text-mut transition hover:text-ink"
     >
     Reset
     </button>
     </div>
+    </div>
+  );
+}
+
+/** Bottom-right study buddy: clickable portrait + pomodoro, with a speech
+ *  bubble while a voice line plays. Collapsible (the ✕) so it never has to
+ *  sit on top of a drill — it shrinks to a small round button. */
+function MascotDock() {
+  useSound();
+  const v = voiceState();
+  const [open, setOpen] = useState(true);
+
+  if (!open)
+    return (
+      <button
+      onClick={() => setOpen(true)}
+      title="Bring back the study buddy"
+      aria-label="Show mascot and pomodoro timer"
+      className={
+        "fixed bottom-5 right-5 z-40 h-12 w-12 cursor-pointer overflow-hidden " +
+        "rounded-full border-2 shadow-xl transition hover:scale-105 " +
+        (v ? "border-gold" : "border-gold/60 hover:border-gold")
+      }
+      >
+      <img
+      src="/static/hero-portrait.png"
+      alt=""
+      className="h-full w-full object-cover object-top"
+      />
+      </button>
+    );
+
+  return (
+    <div className="fixed bottom-5 right-5 z-40 flex flex-col items-center gap-3">
+    <div className="float-slow relative">
+    {v && (
+      <div className="absolute bottom-full left-1/2 z-10 mb-3.5 w-max -translate-x-1/2">
+      <Bubble tail="bottom" className="max-w-[220px] text-[12.5px]">
+      {v.text ? (
+        v.text
+      ) : (
+        <span className="flex items-center gap-2 text-mut">
+        <Speaking /> hoo-hoo…
+        </span>
+      )}
+      </Bubble>
+      </div>
+    )}
+    <img
+    src="/static/hero-portrait.png"
+    alt="Study Hub guide — click me!"
+    title="Click me!"
+    onClick={speakClickLine}
+    className={
+      "cursor-pointer rounded-full border-2 object-cover object-top shadow-xl " +
+      "transition hover:scale-105 active:scale-95 " +
+      (v
+        ? "border-gold shadow-[0_0_26px_rgba(255,184,28,0.4)]"
+        : "border-gold/50 hover:border-gold")
+    }
+    style={{ width: PORTRAIT_SIZE, height: PORTRAIT_SIZE }}
+    />
+    <button
+    onClick={() => setOpen(false)}
+    title="Hide the study buddy"
+    aria-label="Hide mascot and pomodoro timer"
+    className="absolute -right-0.5 -top-0.5 z-10 flex h-6 w-6 cursor-pointer items-center justify-center rounded-full border border-line bg-panel text-[11px] text-mut shadow transition hover:border-mut hover:text-ink"
+    >
+    ✕
+    </button>
+    </div>
+    <PomodoroTimer />
     </div>
   );
 }
@@ -92,7 +169,6 @@ export default function Course({ slug }) {
   const [meta, setMeta] = useState(null);
   const [err, setErr] = useState(null);
   const [tab, setTab] = useState(null);
-  const audioRef = useRef(null);
 
   useEffect(() => {
     api("/api/meta")
@@ -110,21 +186,6 @@ export default function Course({ slug }) {
   function openTab(id) {
     setTab(id);
     window.history.replaceState(null, "", "#" + id);
-  }
-
-  function playRandomLine() {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-
-    const line = VOICE_LINES[Math.floor(Math.random() * VOICE_LINES.length)];
-    const audio = new Audio(line.src);
-    audioRef.current = audio;
-    audio.play().catch(() => {});
-    audio.onended = () => {
-      audioRef.current = null;
-    };
   }
 
   if (err)
@@ -197,25 +258,7 @@ export default function Course({ slug }) {
       </section>
       </main>
 
-      {/* Fixed Portrait + Pomodoro */}
-      <div className="fixed bottom-5 right-5 z-40 flex flex-col items-center gap-3">
-      {/* Portrait */}
-      <div
-      className="cursor-pointer"
-      onClick={playRandomLine}
-      title="Click me!"
-      >
-      <img
-      src="/static/hero-portrait.png"
-      alt="Study Hub guide — click me!"
-      className="rounded-full border-2 border-gold/50 shadow-xl object-cover transition hover:scale-105 hover:border-gold active:scale-95"
-      style={{ width: "240px", height: "240px" }}
-      />
-      </div>
-
-      {/* Pomodoro Timer */}
-      <PomodoroTimer />
-      </div>
+      <MascotDock />
       </>
     );
 }

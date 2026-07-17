@@ -3,7 +3,9 @@ The frontend is a React app built into core/webdist/ (see web/); this
 server serves those static files plus JSON APIs. The homepage reads
 /api/courses; each course app at /c/<slug> reads /c/<slug>/api/meta and
 renders tabs driven by pack capabilities (Playground/SQL drill only when
-stipulated, Study guide tab when courses/<slug>/study_guide.pdf exists)."""
+stipulated, Study guide tab when courses/<slug>/study_guide.pdf exists).
+Mascot voice lines live OUTSIDE the build, in <repo>/assets/ — served
+read-only under /media/ so adding lines never requires an npm build."""
 import json
 import os
 import random
@@ -11,7 +13,7 @@ import secrets
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from . import quiz as Q
 from ._assets import FALLBACK_HTML
@@ -21,13 +23,45 @@ MAX_SESSIONS = 24
 STATE = {}          # slug -> course state dict
 
 WEBDIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webdist")
+# User-managed media (mascot voice lines etc.): <repo>/assets/, served at
+# /media/. Keeping audio out of web/public means dropping in new files is
+# all it takes — no rebuild, and vite's emptyOutDir can't eat them.
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "assets")
+
+AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".m4a", ".webm")
+
+
+def voiceline_manifest():
+    """assets/voicelines/<type>/*  →  {type: [/media/... urls]}.
+
+    The frontend asks for this once at boot and plays whatever is actually
+    on disk — any file names, any count, any audio extension. Renaming,
+    adding, or removing lines never needs a code change."""
+    root = os.path.join(ASSETS, "voicelines")
+    out = {}
+    if not os.path.isdir(root):
+        return out
+    for t in sorted(os.listdir(root)):
+        d = os.path.join(root, t)
+        if not os.path.isdir(d) or t.startswith("."):
+            continue
+        files = sorted(f for f in os.listdir(d)
+                       if f.lower().endswith(AUDIO_EXTS)
+                       and not f.startswith("."))
+        if files:
+            out[t] = ["/media/voicelines/%s/%s" % (quote(t), quote(f))
+                      for f in files]
+    return out
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
         ".css": "text/css; charset=utf-8", ".json": "application/json",
         ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp",
         ".ico": "image/x-icon", ".pdf": "application/pdf",
         ".woff2": "font/woff2", ".woff": "font/woff", ".txt": "text/plain",
-        ".map": "application/json"}
+        ".map": "application/json",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+        ".m4a": "audio/mp4", ".webm": "audio/webm"}
 
 def _jval(v):
     if v is None or isinstance(v, (int, float, str)):
@@ -285,7 +319,7 @@ def _index_bytes():
         return FALLBACK_HTML.encode("utf-8")
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "WGUStudyHub/3.0"
+    server_version = "WGUStudyHub/3.1"
 
     def log_message(self, *args):
         pass
@@ -324,6 +358,25 @@ class Handler(BaseHTTPRequestHandler):
                        MIME.get(ext, "application/octet-stream"), cache)
         return True
 
+    def _media(self, path):
+        """Serve /media/<rel> from <repo>/assets/<rel> (read-only, jailed).
+        Voice lines live at assets/voicelines/<event>/ under any file names
+        (see voiceline_manifest) — no build step involved."""
+        rel = os.path.normpath(unquote(path[len("/media/"):]))
+        if rel.startswith("..") or os.path.isabs(rel):
+            return False
+        full = os.path.join(ASSETS, rel)
+        if not (os.path.isfile(full)
+                and os.path.realpath(full).startswith(
+                    os.path.realpath(ASSETS) + os.sep)):
+            return False
+        ext = os.path.splitext(full)[1].lower()
+        with open(full, "rb") as f:
+            self._send(200, f.read(),
+                       MIME.get(ext, "application/octet-stream"),
+                       "public, max-age=3600")
+        return True
+
     def _read_body(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -345,6 +398,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._index()
                 if rest == "/api/courses":
                     return self._json(home_payload())
+                if rest == "/api/voicelines":
+                    return self._json(voiceline_manifest())
+                if rest.startswith("/media/") and self._media(rest):
+                    return
                 if self._static(rest):
                     return
             else:
@@ -389,6 +446,16 @@ class Handler(BaseHTTPRequestHandler):
                         st["stats"].clear()
                         Q.save_stats(st["stats"], st["stats_path"])
                     return self._json({"ok": True})
+            else:
+                if rest == "/api/shutdown":
+                    # The web UI's power button (and `--stop`). Reply first,
+                    # then ask the serve_forever loop to wind down.
+                    self._json({"ok": True,
+                                "bye": "Rest well, night owl."})
+                    t = threading.Timer(0.2, self.server.shutdown)
+                    t.daemon = True
+                    t.start()
+                    return
         except Exception as e:
             return self._json({"error": str(e)}, 500)
         self._json({"error": "not found"}, 404)
@@ -418,11 +485,15 @@ def serve(packs, port=8426, open_browser=True):
           or "(none yet \u2014 drop a <slug>-pack.zip into courses/ "
              "and restart)"))
     print("      Progress lives in ~/.wgu_study_hub (shared with --cli). "
-          "Ctrl+C stops the server.")
+          "Stop it with the \u23fb button")
+    print("      in the app's top bar, or Ctrl+C here.")
     print()
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
+        # serve_forever only returns after /api/shutdown (power button
+        # or `wgu_study_hub.py --stop`).
+        print("\n  Stopped from the app. Go get some sleep, night owl.")
     except KeyboardInterrupt:
         print("\n  Stopped. Go get some sleep, night owl.")

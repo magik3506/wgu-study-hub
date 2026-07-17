@@ -1,6 +1,6 @@
 ---
 name: course-pack-creator
-description: Build a complete WGU Study Hub course pack (adaptive OA-style drills, optional SQL playground, study guide) for any WGU course from its raw materials — zyBooks/textbook chapter exports, a practice test or pre-assessment coaching report, study sheets. Use this skill whenever the user asks to add a course to their study hub, build a course pack or "node", make drills/a sandbox/a quiz app for a WGU class, or names a course code (D315, D427, C958, D286, D281, C949, ...) or title ("Java Fundamentals", "Linux Foundations", "Calculus I") and wants study tooling like their D426 setup. Also use it to audit, repair, or extend an existing pack. The deliverable is a validated course folder for the hub plus a study guide PDF generated via the course-study-guide skill.
+description: Build a complete WGU Study Hub course pack (adaptive OA-style drills, an optional hands-on playground, study guide) for any WGU course from its raw materials — zyBooks/textbook chapter exports, a practice test or pre-assessment coaching report, study sheets. Use this skill whenever the user asks to add a course to their study hub, build a course pack or "node", make drills/a sandbox/a quiz app for a WGU class, or names a course code (D315, D427, C958, D286, D281, C949, ...) or title ("Java Fundamentals", "Linux Foundations", "Calculus I") and wants study tooling like their existing setup. Also use it to audit, repair, or extend an existing pack. The deliverable is a validated course folder for the hub plus a study guide PDF generated via the course-study-guide skill.
 ---
 
 # Course Pack Creator
@@ -8,8 +8,12 @@ description: Build a complete WGU Study Hub course pack (adaptive OA-style drill
 You are adding a course to the user's **WGU Study Hub** — a local,
 zero-dependency Python app (`wgu_study_hub.py`) that auto-discovers course
 folders and gives each one: adaptive exam drills weighted like the real OA,
-a mastery map, a study-guide tab, and (for database courses only) a
-MySQL-flavored SQL playground with execution-graded tasks.
+a mastery map, a study-guide tab, and — where stipulated — a hands-on
+playground. The pipeline is the same for EVERY course type: programming,
+math/stats/networking, tools and scenarios, gen-ed. Database courses add
+one extra layer (sample databases, execution-graded SQL tasks, the SQL
+console); those parts are explicitly scoped below and skipped for
+everything else.
 
 A "pack" is ONE folder: `courses/<slug>/` containing `course.py`,
 `content.py`, and `study_guide.pdf`. The hub discovers it on restart.
@@ -26,22 +30,42 @@ Your filesystem does NOT persist between conversations. The hub's code must
 be obtained before anything else, in this order:
 
 1. A zip the user uploaded in this conversation (`/mnt/user-data/uploads/`).
-2. The project's copies: `wgu-study-hub*.zip` (the framework: core,
-   template, skills, launcher) plus any `<slug>-pack*.zip` course zips
-   under `/mnt/project/`. Assemble: unzip the hub, then unzip each pack
-   into `courses/`.
-3. Neither present → STOP and ask the user to upload their current
-   `study-hub` folder as a zip. Their local copy is canonical (it has their
-   newest packs); prefer it over the project copy when both exist.
+   Their local copy is canonical (it has their newest packs); prefer it
+   over the project copy when both exist.
+2. The project's FULL framework zip — `wgu-study-hub.zip`: `core/`, `web/`,
+   `courses/_template/`, `skills/`, `assets/voicelines/` (framework mascot
+   media, served at `/media/`, harmless to packs), the root Start/Stop
+   launchers, `install.py`, and `wgu_study_hub.py` — plus any
+   `<slug>-pack*.zip` course zips under `/mnt/project/`. Assemble: unzip
+   the hub, then unzip each pack into `courses/`.
+3. **An UPDATE OVERLAY (`wgu-study-hub-update.zip`, or any `*-update.zip`)
+   is a patch, NEVER a source tree.** It ships only changed files — no
+   harness, no quiz engine, no playgrounds package — and its webdist is
+   deliberately stripped of user media, so a tree built from it alone
+   fails `--selftest` immediately (framework check:
+   `webdist/static/owl-hero.webp`, `owl-head.png`, `favicon.ico` missing).
+   Apply an overlay ONLY on top of a full tree from 1 or 2 (unzip full
+   tree, unzip overlay over it, then add packs).
+4. Loose `study-hub/...` files in project knowledge are REFERENCE ONLY.
+   Search results are chunked text with no binaries (webdist media, voice
+   audio, mascot images) and no guarantee of completeness — never assemble
+   a build tree from them.
+5. No full tree available via 1–3 → STOP and ask the user to upload their
+   current `study-hub` folder as a zip.
 
-Then: unzip to `/home/claude/study-hub/`, and immediately run
-`python3 wgu_study_hub.py --selftest` to prove the environment and existing
-packs are healthy BEFORE you build anything. Study the worked examples:
-`courses/d426/` (full SQL course) and `courses/_template/` (minimal pack +
-archetype demos, heavily commented).
+Then: unzip to `/home/claude/study-hub/`, apply any overlay, add the packs,
+and immediately run `python3 wgu_study_hub.py --selftest` to prove the
+environment and existing packs are healthy BEFORE you build anything.
+Framework fingerprint as of v3.1 (July 2026), to sanity-check what you
+unzipped: `core/webapp.py` contains `voiceline_manifest` and
+`/api/shutdown`; `web/src/sound.js` exists; `Start Study Hub.*` /
+`Stop Study Hub.*` launchers and `install.py` sit at the repo root. Study
+the worked examples: `courses/d426/` (full SQL course) and
+`courses/_template/` (minimal pack + archetype demos, heavily commented).
 
-Never reconstruct hub code from memory or training data. If core files are
-missing or the selftest fails out of the box, report it and stop.
+Never reconstruct hub code from memory, training data, or project-knowledge
+chunks. If core files are missing or the selftest fails out of the box,
+report it and stop.
 
 ## Step 1 — Triage the course (decides everything downstream)
 
@@ -55,13 +79,14 @@ Ask the user (or read the coaching report / degree plan) for:
 
 | Course type (examples from this program)                       | Capabilities |
 |----------------------------------------------------------------|--------------|
-| Database w/ SQL labs — D426, D427                               | MCQ/TF + SQL playground + SQL tasks |
 | Computable technical — C955 stats, C958 calc, C959/C960 discrete, D315 networking (subnetting!), C952 architecture, C949/C950 DSA | MCQ/TF, mostly COMPUTED |
 | Programming — D278/C867 scripting, D286/D287/D387 Java, D288 back-end, D276 web | MCQ/TF incl. code-output questions |
 | Tool/OS/scenario — D281 Linux, D197 version control, D430 security, D686 OS, D429/D685 AI | MCQ/TF, definition + scenario pools |
+| Database w/ SQL labs — D426, D427                               | MCQ/TF + SQL playground + SQL tasks |
 | Gen-ed / writing-heavy — D268, D270, C963, D333, C458, D336, D459 | MCQ/TF definition drills (light pack; confirm the user wants one) |
 
-Only database courses get `SAMPLE_DBS` (it feeds the SQL drill grader).
+`SAMPLE_DBS` exists only for the database row (it feeds the SQL drill
+grader); every other course type never touches it.
 Playgrounds are a separate, MANDATORY stipulation: every pack declares
 `PLAYGROUND = <backend>` or `PLAYGROUND = None` plus a note — the harness
 fails silent packs. The contract, hard boundaries, and the per-course
@@ -123,21 +148,6 @@ courses only).
 ```
 **TF dict:** `{"concept", "type": "tf", "prompt", "answer": bool, "explain"}`
 
-**SQL task dict** (database courses only — copy the `_sqltask` helper from
-`courses/d426/content.py`):
-```python
-{"type": "sql", "concept": str, "db": str, "prompt": str,
- "reference": str,               # correct SQL; graded against itself
- "kind": "select" | "dml" | "ddl",
- "order_matters": bool,          # select: compare row order?
- "verify": str | None,           # dml: SELECT run on user vs reference
-                                 #      state; result sets must match
- "ddl_check": dict | None,       # ddl: {"table": "T",
-                                 #  "has_columns": [("Col","TYPE"), ...],
-                                 #  "pk": ["Col", ...]}   (pk optional)
- "hint": str | None}
-```
-
 **Non-negotiable rules** (the harness enforces every mechanical one):
 - **Never mirror a practice-test item.** Same concept, new surface —
   different table/values/framing. Packs re-teach; they never reproduce
@@ -160,18 +170,38 @@ courses only).
   - *Definitions (all courses)*: (term, definition) pools with same-pool
     distractors; pad small pools so every question has >=3 options.
 - **Every random parameter combination must be answerable.** Use vetted
-  tuples, not independent choices (D426 lesson: independently chosen
-  breed x height produced zero-row tasks; template lesson: start=0 made
-  a distractor collide with the answer).
-- SQL DML deletes: pick FK-safe victim rows (no children referencing them),
+  tuples, not independent choices (lesson from real packs: independently
+  chosen breed x height produced zero-row tasks; a start=0 made a
+  distractor collide with the answer).
+- Every question gets an `explain` that teaches.
+
+Export: `MCQ_GENERATORS = [...]` (and `SQL_GENERATORS = [...]` — an empty
+list for every non-database course). 60–110 MCQ generators is the target
+for a 3–4 CU OA course (the scale the original D426 pack set); scale down
+proportionally for light packs.
+
+### Database courses only — SQL tasks (skip this block for everything else)
+
+**SQL task dict** (copy the `_sqltask` helper from
+`courses/d426/content.py`):
+```python
+{"type": "sql", "concept": str, "db": str, "prompt": str,
+ "reference": str,               # correct SQL; graded against itself
+ "kind": "select" | "dml" | "ddl",
+ "order_matters": bool,          # select: compare row order?
+ "verify": str | None,           # dml: SELECT run on user vs reference
+                                 #      state; result sets must match
+ "ddl_check": dict | None,       # ddl: {"table": "T",
+                                 #  "has_columns": [("Col","TYPE"), ...],
+                                 #  "pk": ["Col", ...]}   (pk optional)
+ "hint": str | None}
+```
+
+Two extra rules, harness-enforced:
+- DML deletes: pick FK-safe victim rows (no children referencing them),
   or the reference itself fails.
 - Verify dialect facts against the source before encoding (MySQL has no
   FULL JOIN or materialized views; TRUNCATE resets AUTO_INCREMENT).
-- Every question gets an `explain` that teaches.
-
-Export: `MCQ_GENERATORS = [...]`, `SQL_GENERATORS = [...]` (empty list for
-non-database courses). 60–110 MCQ generators is the D426-scale target for a
-3–4 CU OA course; scale down proportionally for light packs.
 
 ## Step 6 — Study guide (REQUIRED, not optional)
 
@@ -204,13 +234,14 @@ Then the mandatory playground stipulation (full rules in the Playgrounds
 section):
 
 ```python
-from core.playgrounds.sql import SqlPlayground          # database courses
-PLAYGROUND = SqlPlayground(SAMPLE_DBS, DB_DESCRIPTIONS,
-                           placeholder="-- branded starter text")
+PLAYGROUND = None                                        # most courses
+PLAYGROUND_NOTE = "MCQ-only OA; no hands-on component."  # required w/ None
 # or: from core.playgrounds.python_runner import PythonPlayground
-# or: from .coral import CoralPlayground                # in-pack backend
-# or: PLAYGROUND = None
-#     PLAYGROUND_NOTE = "MCQ-only OA; no hands-on component."
+# or: from .coral import CoralPlayground                 # in-pack backend
+# or (database courses):
+#     from core.playgrounds.sql import SqlPlayground
+#     PLAYGROUND = SqlPlayground(SAMPLE_DBS, DB_DESCRIPTIONS,
+#                                placeholder="-- branded starter text")
 ```
 
 Topic keywords are substring-matched against `concept-id + name + ref`
@@ -237,22 +268,30 @@ from `courses/planned.json` if it's listed there.
    least three snippets by hand — one happy path, one error, and (for
    interpreter backends) one infinite loop, which must come back as an
    error block, never a hang.
-7. If you changed `core/` or the template: execute each rendered page's
-   `<script>` under node with a DOM shim (stub `document`, `fetch`,
-   `history`) — an unguarded `addEventListener` on an absent element
-   kills the ENTIRE script, and no amount of HTML inspection catches it.
+7. If you changed `core/`, the template, or anything under `web/`: make
+   sure the harness ran with node + `web/node_modules` present so the
+   BUILT bundle actually executed under jsdom
+   (`web/scripts/render_check.mjs` — it fails the run on ANY uncaught JS
+   error). An unguarded `addEventListener` on an absent element, or an
+   unguarded module-scope side effect, kills the ENTIRE script, and no
+   amount of HTML inspection catches it.
 
 ## Step 9 — Deliver
 
 - The PRIMARY deliverable is the pack zip: `<slug>-pack.zip` with the
   course folder at its root (unzips into `courses/`). Ship a refreshed
-  `wgu-study-hub.zip` ONLY when you changed `core/`, `courses/_template/`,
-  or `skills/` — which, per rule zero, normally means never.
+  FULL `wgu-study-hub.zip` when you changed `core/`, `web/`,
+  `courses/_template/`, or `skills/` — which, per rule zero, normally
+  means never. Never ship a partial `*-update.zip` overlay from a pack
+  session; overlays are for framework-only work and they poison Step 0
+  for the next session.
 - Tell the user: replace their local `study-hub/` (progress is safe — it
   lives in `~/.wgu_study_hub/`), restart the hub, the card appears.
 - Remind them to **upload the pack zip (and the hub zip, if it changed)
-  to this project's files**, so the next session starts from current
-  state. This loop is what keeps the system model-independent.
+  to this project's files**. If the project currently holds only an
+  `*-update.zip` or loose repo files instead of a current FULL
+  `wgu-study-hub.zip`, say so and ask them to upload one — Step 0 depends
+  on it. This loop is what keeps the system model-independent.
 
 ## QA — the gate, in two halves
 
@@ -270,7 +309,7 @@ A–E keys; shuffle-hostile "all of the above"; asymmetric answer giveaways
 — answer verbatim in the prompt while no distractor is);
 **determinism** (same-seed purity per generator, per-generator
 CROSS-PROCESS fingerprints that name offenders, variety warnings);
-**SQL tasks** (reference self-grades, returns rows, junk fails, reference
+**SQL tasks** (database courses: reference self-grades, returns rows, junk fails, reference
 determinism, db keys valid, prompt/hint lint); **playground**
 (stipulation + recorded user decision, selfchecks executed, junk-input
 resilience); **coverage** (every concept AND every blueprint chapter
@@ -436,15 +475,31 @@ program and one integer-division case.
 
 - Fresh sessions have NO hub code; `/mnt/project/` is read-only — copy
   before editing.
+- `*-update.zip` overlays are patches, NOT source trees (see Step 0):
+  built alone, they fail `--selftest` on the framework webdist check by
+  design (required media is deliberately absent, restored only by the
+  user's overlay). Do not "fix" that failure by regenerating media —
+  acquire a full tree instead.
+- Project-knowledge copies of the repo are chunked text with no binaries;
+  treat them as reference, never as source (July 2026: a UI session had
+  to rebuild the tree from them and could not recover `harness.py` or
+  `engine.py` at all).
+- The built bundle boots a sound system at module scope (a YouTube iframe
+  loader, an `/api/voicelines` fetch, interval timers) in
+  `web/src/sound.js`. Its guards — try/catch around player creation,
+  promise-checked `audio.play()`, `typeof window` gates — are what let
+  `render_check.mjs` pass, because jsdom fails the run on ANY uncaught
+  error. Touch `web/` without stripping them.
 - `PK` magic bytes on a ".pdf" mean a zip of page images; extract, don't
   parse it as a PDF.
 - `hash()` seeds vary per process; harness seeds use `sum(name.encode())`.
 - Independent random parameters produce unanswerable or self-colliding
   questions.
 - Distractor collisions from arithmetic coincidences (`a+b+1 == a*b`).
-- FK parents in DELETE tasks break the reference solution.
-- SQLite behavior differs from MySQL facts; the engine translates syntax
-  but exam facts come from the source.
+- SQL packs only: FK parents in DELETE tasks break the reference
+  solution.
+- SQL packs only: SQLite behavior differs from MySQL facts; the engine
+  translates syntax but exam facts come from the source.
 - Animation-only zyBooks sections silently vanish from exports.
 - Section parsers misread blocked sections — audit against raw source.
 - Code-output questions: simulate the exact semantics or don't ask it.
@@ -460,9 +515,10 @@ program and one integer-division case.
   kills the whole page script. Bind through a null-safe helper and execute
   the script under node to prove it.
 - `core/_assets.py` is generated; regenerate it via a script file with
-  single-escaped newlines and then IMPORT `core.webapp` as part of
-  verification — `--selftest` alone never imports the web layer, so a
-  corrupted assets module can hide behind passing selftests.
+  single-escaped newlines and then IMPORT `core.webapp` directly as part
+  of verification — the harness's render checks also import the web layer
+  and will surface a broken import as an error, but the direct import is
+  the fast, unambiguous proof.
 - `str()` coercion hides leaked objects: an f-string happily embeds a
   tuple, and a list survives `map(str, …)` distinctness checks. Options
   must BE strings — the harness type-checks raw values (the July 2026
@@ -494,5 +550,7 @@ program and one integer-division case.
 6. Harness errors: zero. Warnings: listed and dispositioned in the
    delivery message. Five seeded sample questions included in the
    delivery for the user's spot-check.
-7. Refreshed hub zip delivered AND the user reminded to re-upload it to
-   the project.
+7. Pack zip delivered (plus a refreshed FULL hub zip iff the framework
+   changed) AND the user reminded to re-upload to the project — asking
+   for a current full `wgu-study-hub.zip` there if the project holds
+   only an `*-update.zip` or loose files.

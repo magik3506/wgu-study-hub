@@ -3,6 +3,7 @@
 WGU Study Hub — the only file you run.
 
   python3 wgu_study_hub.py                    web app (opens your browser)
+  python3 wgu_study_hub.py --stop             stop a running hub
   python3 wgu_study_hub.py --cli d426         terminal REPL + drills
   python3 wgu_study_hub.py --cli d426 --quiz 10
   python3 wgu_study_hub.py --selftest         validate every course pack
@@ -33,6 +34,38 @@ def migrate_legacy():
         print(f"  (migrated your existing D426 progress from {old})")
 
 
+def stop_running_hub(port):
+    """Find a running hub on `port` (or the ports serve() scans up to when
+    the first is busy), verify it really is the hub, and ask it to stop."""
+    import json
+    import urllib.request
+
+    for cand in range(port, port + 20):
+        base = f"http://127.0.0.1:{cand}"
+        try:
+            with urllib.request.urlopen(base + "/api/courses",
+                                        timeout=1) as r:
+                if "courses" not in json.load(r):
+                    continue  # something else lives on this port
+        except Exception:
+            continue
+        try:
+            req = urllib.request.Request(
+                base + "/api/shutdown", data=b"{}",
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=3) as r:
+                r.read()
+            print(f"  Stopped the Study Hub on port {cand}. \U0001F989")
+            return 0
+        except Exception as e:
+            print(f"  Found the hub on port {cand} but couldn't stop it "
+                  f"({e}).")
+            return 1
+    print(f"  No running Study Hub found on ports {port}\u2013{port + 19}.")
+    print("  (Started it on a custom port? Add --port <n>.)")
+    return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="wgu_study_hub.py",
@@ -47,9 +80,15 @@ def main(argv=None):
                     help="list discovered courses and exit")
     ap.add_argument("--port", type=int, default=8426,
                     help="web port (default 8426; scans up if busy)")
+    ap.add_argument("--stop", action="store_true",
+                    help="ask a running hub to shut down (checks --port and "
+                         "the ports it scans to when busy)")
     ap.add_argument("--no-browser", action="store_true",
                     help="don't open the browser automatically")
     args, rest = ap.parse_known_args(argv)
+
+    if args.stop:
+        return stop_running_hub(args.port)
 
     packs = discover()
     by_slug = {p.slug: p for p in packs}

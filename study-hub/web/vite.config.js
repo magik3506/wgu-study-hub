@@ -14,6 +14,7 @@ export default defineConfig({
     // `npm run dev` proxies API calls to a locally running hub
     proxy: {
       "/api": "http://127.0.0.1:8426",
+      "/media": "http://127.0.0.1:8426",
       "/c": {
         target: "http://127.0.0.1:8426",
         bypass: (req) =>

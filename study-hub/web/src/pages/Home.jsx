@@ -1,21 +1,9 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { makeApi, useTheme } from "../theme.js";
-import { Chip, TopBar } from "../ui.jsx";
+import { Bubble, Chip, Speaking, TopBar, useSound } from "../ui.jsx";
+import { speakClickLine, voiceState } from "../sound.js";
 
 const api = makeApi("");
-
-const VOICE_LINES = [
-  { text: "Boop! Systems online and ready to assist.", src: "/static/voice/01_systems_online.wav" },
-{ text: "Hoo's ready to write some code?", src: "/static/voice/02_whos_ready.wav" },
-{ text: "Hello, World! What are we studying next?", src: "/static/voice/03_hello_world.wav" },
-{ text: "Did you just poke my UI? I felt that!", src: "/static/voice/04_poke_ui.wav" },
-{ text: "My algorithms predict a highly productive session today.", src: "/static/voice/05_algorithms.wav" },
-{ text: "Night owl mode activated. Let's get to work!", src: "/static/voice/06_night_owl.wav" },
-{ text: "At your service! Let's pull up the next module.", src: "/static/voice/07_at_your_service.wav" },
-{ text: "Let's compile some knowledge and crush those objectives!", src: "/static/voice/08_compile_knowledge.wav" },
-{ text: "Ready to catch some bugs and ace some practice tests?", src: "/static/voice/09_catch_bugs.wav" },
-{ text: "I'm fully charged and my syntax is flawless. How about you?", src: "/static/voice/10_fully_charged.wav" },
-];
 
 function CodeMark({ code }) {
   return (
@@ -67,35 +55,56 @@ function PlannedCard({ c }) {
   );
 }
 
+/** The hero mascot: portrait anchored right; the bubble floats to its left
+ *  (absolutely positioned — appearing/disappearing never shifts the layout).
+ *  Bubble colors come from the theme, so its tail always matches the panel
+ *  in both night-owl and day-roost modes. */
+function HeroMascot() {
+  useSound();
+  const v = voiceState();
+  return (
+    <div className="relative flex justify-end max-md:justify-center">
+    <div className="relative">
+    {v && (
+      <div className="absolute right-full top-[16%] z-10 mr-4 w-max max-w-[min(240px,38vw)] max-md:hidden">
+      <Bubble tail="right">
+      {v.text ? (
+        v.text
+      ) : (
+        <span className="flex items-center gap-2 text-mut">
+        <Speaking /> hoo-hoo…
+        </span>
+      )}
+      </Bubble>
+      </div>
+    )}
+    <img
+    src="/static/hero-portrait.png"
+    alt="Study Hub guide — click me!"
+    onClick={speakClickLine}
+    title="Click me!"
+    className={
+      "float-slow block w-auto cursor-pointer select-none rounded-2xl " +
+      "border-2 shadow-xl transition duration-200 hover:scale-[1.02] " +
+      "active:scale-95 " +
+      (v ? "border-gold shadow-[0_0_34px_rgba(255,184,28,0.35)]"
+         : "border-gold/40 hover:border-gold")
+    }
+    style={{ maxHeight: "400px" }}
+    />
+    </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [theme, toggle] = useTheme();
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
-  const [bubbleText, setBubbleText] = useState(null);
-  const audioRef = useRef(null);
 
   useEffect(() => {
     api("/api/courses").then(setData).catch((e) => setErr(String(e)));
   }, []);
-
-  function playRandomLine() {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-
-    const line = VOICE_LINES[Math.floor(Math.random() * VOICE_LINES.length)];
-    const audio = new Audio(line.src);
-    audioRef.current = audio;
-
-    setBubbleText(line.text);
-
-    audio.play().catch(() => {});
-    audio.onended = () => {
-      setBubbleText(null);
-      audioRef.current = null;
-    };
-  }
 
   return (
     <>
@@ -119,39 +128,7 @@ export default function Home() {
     </p>
     </div>
 
-    {/* Portrait + Speech Bubble */}
-    <div className="flex items-start justify-end gap-5">
-    {bubbleText && (
-      <div className="relative mt-20 max-w-[220px] rounded-2xl border border-line bg-panel px-4 py-3 text-[13.5px] leading-snug text-ink shadow-xl">
-      {bubbleText}
-
-      {/* Arrow pointing right toward the portrait */}
-      <div
-      className="absolute top-1/2 -right-2 -translate-y-1/2"
-      style={{
-        width: 0,
-        height: 0,
-        borderTop: "8px solid transparent",
-        borderBottom: "8px solid transparent",
-        borderLeft: "8px solid #1e293b", // matches panel background
-      }}
-      />
-      </div>
-    )}
-
-    <img
-    src="/static/hero-portrait.png"
-    alt="Study Hub guide — click me!"
-    onClick={playRandomLine}
-    className="cursor-pointer rounded-2xl border-2 border-gold/40 shadow-xl transition hover:scale-[1.03] hover:border-gold active:scale-95"
-    style={{
-      maxHeight: "400px",
-      width: "auto",
-      display: "block",
-    }}
-    title="Click me!"
-    />
-    </div>
+    <HeroMascot />
     </div>
     </section>
 

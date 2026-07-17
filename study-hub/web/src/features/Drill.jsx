@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Btn, Kbd, Panel, ProgressBar, Tag } from "../ui.jsx";
+import { reportAnswer } from "../sound.js";
 import Summary from "./Summary.jsx";
 
 const LETTERS = "ABCDE";
@@ -36,6 +37,7 @@ export default function Drill({ api, meta, active }) {
       setSess({ err: d.error });
       return;
     }
+    reportAnswer(d); // mascot: right/wrong line, or the score line at the end
     setSess({ ...s, reveal: { ...d, picked: skip ? null : idx, skip } });
   }
 
